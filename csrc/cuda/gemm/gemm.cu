@@ -8,7 +8,7 @@
 
 #include <cuda_bf16.h>
 #ifndef SPARKINFER_NVRTC_DEVICE_ONLY
-#include <cuda_runtime.h>
+#include "sparkinfer/kernels/gemm.h"   // at file scope so GemmConfig is visible
 #endif
 
 namespace sparkinfer {
@@ -75,8 +75,6 @@ __global__ void gemm_f32_kernel(
 template __global__ void gemm_f32_kernel<16>(const __nv_bfloat16*, const __nv_bfloat16*, float*, int, int, int);
 
 #ifndef SPARKINFER_NVRTC_DEVICE_ONLY
-#include "sparkinfer/kernels/gemm.h"
-
 void launch_gemm(
     const void* A, const void* B, void* C,
     int M, int N, int K, float alpha, float beta,
