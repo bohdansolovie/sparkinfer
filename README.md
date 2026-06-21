@@ -80,10 +80,10 @@ Both fit in RTX Spark's 128 GB unified memory with significant headroom for KV c
 
 | Repo | Purpose |
 |---|---|
-| [kernels](https://github.com/gittensor-ai-lab/kernels) | CUDA/Triton kernels: flash decode, MoE grouped GEMM, fused ops |
-| [moe](https://github.com/gittensor-ai-lab/moe) | MoE engine: router, expert allocator, grouped GEMM dispatcher |
-| [bench](https://github.com/gittensor-ai-lab/bench) | Reproducible benchmarks for RTX Spark, RTX 5090, Jetson Thor |
-| [agent](https://github.com/gittensor-ai-lab/agent) | Kernel design agents: NCU report parsing, auto-tuning loops |
+| [sparkinfer-kernels](https://github.com/gittensor-ai-lab/sparkinfer-kernels) | CUDA/Triton kernels: flash decode, MoE grouped GEMM, fused ops |
+| [sparkinfer-moe](https://github.com/gittensor-ai-lab/sparkinfer-moe) | MoE engine: router, expert allocator, grouped GEMM dispatcher |
+| [sparkinfer-bench](https://github.com/gittensor-ai-lab/sparkinfer-bench) | Reproducible benchmarks for RTX Spark, RTX 5090, Jetson Thor |
+| [sparkinfer-agent](https://github.com/gittensor-ai-lab/sparkinfer-agent) | Kernel design agents: NCU report parsing, auto-tuning loops |
 
 ---
 
