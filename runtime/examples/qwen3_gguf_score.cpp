@@ -65,6 +65,9 @@ int main(int argc, char** argv) {
     auto engine = sparkinfer::moe::MoEEngine::create(mc);
     sparkinfer::Qwen35Model model(cfg, &kv, engine.get());
     if (!model.load_gguf(path)) { printf("[FAIL] load_gguf\n"); return 1; }
+    // forward_token() reads the KV block table for seq 0 (the model's default
+    // seq_id); generate() allocates it — do the same here before scoring.
+    if (!kv.allocate(0, cfg.max_seq)) { printf("[FAIL] KV allocate\n"); return 1; }
 
     const int V = cfg.vocab;
     std::vector<float> lg(V);
@@ -91,6 +94,7 @@ int main(int argc, char** argv) {
         for (int k = 0; k < K; k++) printf("%s%d:%.6f", k ? "," : "", idx[k], (double)lg[idx[k]] - lse);
         printf("\n");
     }
+    kv.free(0);
     printf("PPL %.5f over %d positions\n", std::exp(nll / std::max(1, scored)), scored);
     printf("ARGMATCH %d/%d %.4f\n", ammatch, scored, (double)ammatch / std::max(1, scored));
     return 0;
