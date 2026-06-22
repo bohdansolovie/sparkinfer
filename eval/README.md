@@ -45,6 +45,30 @@ tok/s). Reuse mode assumes the weights are cached at `/workspace/models`.
 Labels: **REJECT** (failed correctness) · **none** (within the significance gate) ·
 **XS · S · M · L · XL** (verified speedup bucket, by fraction of remaining headroom closed).
 
+## PR auto-evaluation bot
+
+`pr_eval_bot.py` polls open PRs and, for any PR with a **new head commit**, runs the evaluation,
+applies an `eval:<LABEL>` label, and posts the result as a PR comment. **It never merges** — merge
+manually after review. Idempotent: each commit is evaluated once (tracked by a hidden marker in the
+bot's comment), so it only spins the GPU when there's new work.
+
+```bash
+eval/setup_labels.sh                                   # one-time: create the eval:* labels
+python eval/pr_eval_bot.py --instance 42134865 --frontier 164 --ceiling 366   # one poll
+python eval/pr_eval_bot.py --instance 42134865 --dry-run                       # eval but don't post
+```
+
+**Schedule it every 30 minutes** (the wrapper gives cron a sane env + refreshes the evaluator):
+```bash
+crontab -l 2>/dev/null; echo "*/30 * * * * $PWD/eval/run_bot_cron.sh >> /tmp/sparkinfer_bot.log 2>&1" | crontab -
+```
+Each run: start the (stopped) instance → evaluate new PR commits → **stop it again** → label +
+comment. Disable with `crontab -e`. Needs `gh` authenticated and the vast key saved (`vastai set api-key`).
+
+(For a Claude-agent flavor instead of system cron — e.g. to add LLM anti-gaming triage of the diff
+before labeling — schedule a recurring agent that shells out to `pr_eval_bot.py`; the numeric label
+still comes from the deterministic evaluator so validators converge.)
+
 ## Status / notes
 
 - The **on-instance evaluator** (`bench/scripts/evaluate.sh` + `label.py`) reuses the tested

@@ -1,0 +1,95 @@
+#!/usr/bin/env python3
+"""sparkinfer PR auto-evaluator (bot).
+
+Polls open PRs; for any PR whose head commit hasn't been evaluated yet, runs the vast.ai
+evaluation (build → correctness → speed → label), applies an `eval:<LABEL>` label, and posts the
+result as a PR comment. **Never merges** — merging is manual after review.
+
+Designed to run on a 30-min schedule (system cron or a Claude agent). Idempotent: a commit is
+evaluated once (tracked by a hidden marker in the bot's comment), so re-runs only pick up new
+commits and only spin the GPU when there's new work.
+
+  python eval/pr_eval_bot.py --instance 42134865 --frontier 164 --ceiling 366
+
+Needs: `gh` authenticated, VAST_API_KEY saved (vastai), and the eval:* labels (eval/setup_labels.sh).
+"""
+import argparse, json, os, re, subprocess, sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+
+def gh(args):
+    return subprocess.run(["gh"] + args, capture_output=True, text=True)
+
+def evaluated_commits(repo, num):
+    r = gh(["pr", "view", str(num), "-R", repo, "--json", "comments"])
+    done = set()
+    for c in json.loads(r.stdout or "{}").get("comments", []):
+        for m in re.finditer(r"<!-- sparkinfer-eval:([0-9a-f]+) -->", c.get("body", "")):
+            done.add(m.group(1))
+    return done
+
+def render(res, oid):
+    label = res.get("label", "?")
+    icon = {"REJECT": "❌", "none": "⚪", "BASELINE": "📊"}.get(label, "✅")
+    rows = [f"| **label** | `eval:{label}` |",
+            f"| decode | {res.get('tps','?')} tok/s |",
+            f"| correctness | top-1 {res.get('top1',0)*100:.1f}% · KL {res.get('kl','?')} |"]
+    if "frontier_tps" in res and res["frontier_tps"]:
+        rows.insert(2, f"| vs frontier | {res['frontier_tps']} tok/s → "
+                       f"{res.get('pct_over_frontier', 0):+.1f}% ({res.get('delta_tps',0):+.1f}) |")
+    note = {"REJECT": f"Failed the correctness gate: {res.get('reason','')}. Not a valid submission.",
+            "none": "Within the significance gate — no *verified* speedup over the current frontier.",
+            "BASELINE": "No frontier was set; this run establishes it."
+            }.get(label, "Verified speedup over the live frontier.")
+    return (f"<!-- sparkinfer-eval:{oid} -->\n"
+            f"## {icon} sparkinfer auto-eval — `{oid}`\n\n"
+            f"| metric | value |\n|---|---|\n" + "\n".join(rows) + "\n\n"
+            f"{note}\n\n"
+            f"_RTX 5090 (sm_120) · built from source · correctness vs llama.cpp. "
+            f"Automated — **not merged**; merge manually after review._")
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--instance", type=int, required=True, help="vast.ai instance id to reuse")
+    ap.add_argument("--frontier", type=float, default=0)
+    ap.add_argument("--ceiling", type=float, default=0)
+    ap.add_argument("--repo", default="gittensor-ai-lab/sparkinfer")
+    ap.add_argument("--dry-run", action="store_true", help="evaluate + print, but don't label/comment")
+    args = ap.parse_args()
+
+    prs = json.loads(gh(["pr", "list", "-R", args.repo, "--state", "open",
+                         "--json", "number,headRefName,headRefOid,title"]).stdout or "[]")
+    if not prs:
+        print("no open PRs"); return
+    for pr in prs:
+        num, branch, oid = pr["number"], pr["headRefName"], pr["headRefOid"][:7]
+        if oid in evaluated_commits(args.repo, num):
+            print(f"PR #{num} @ {oid}: already evaluated — skip"); continue
+        print(f"PR #{num} @ {oid}: evaluating '{branch}' ...")
+        r = subprocess.run([sys.executable, os.path.join(HERE, "vast_eval.py"),
+                            "--reuse", str(args.instance), "--ref", branch,
+                            "--frontier", str(args.frontier), "--ceiling", str(args.ceiling)],
+                           cwd=ROOT, capture_output=True, text=True, timeout=14400)
+        line = next((l for l in r.stdout.splitlines() if l.startswith("RESULT_JSON")), None)
+        if not line:
+            print(f"PR #{num}: eval produced no result"); body = (
+                f"<!-- sparkinfer-eval:{oid} -->\n⚠️ **sparkinfer auto-eval errored** for `{oid}` "
+                f"— re-run manually.\n\n<details><summary>log tail</summary>\n\n```\n{r.stdout[-1200:]}\n```\n</details>")
+            res, label = None, None
+        else:
+            res = json.loads(line[len("RESULT_JSON "):]); label = res["label"]; body = render(res, oid)
+            print(f"PR #{num}: {json.dumps(res)}")
+        if args.dry_run:
+            print("--- dry-run, not posting ---\n" + body); continue
+        if label:
+            for l in json.loads(gh(["pr", "view", str(num), "-R", args.repo, "--json", "labels"]).stdout)["labels"]:
+                if l["name"].startswith("eval:"):
+                    gh(["pr", "edit", str(num), "-R", args.repo, "--remove-label", l["name"]])
+            gh(["pr", "edit", str(num), "-R", args.repo, "--add-label", f"eval:{label}"])
+        gh(["pr", "comment", str(num), "-R", args.repo, "--body", body])
+        print(f"PR #{num}: posted {'eval:'+label if label else 'error'} — NOT merged.")
+    print("done — no merges (manual).")
+
+if __name__ == "__main__":
+    main()
