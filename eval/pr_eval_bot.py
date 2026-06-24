@@ -150,9 +150,10 @@ def main():
                            cwd=ROOT, capture_output=True, text=True, timeout=14400)
         line = next((l for l in r.stdout.splitlines() if l.startswith("RESULT_JSON")), None)
         if not line:
-            print(f"PR #{num}: eval produced no result"); body = (
-                f"<!-- sparkinfer-eval:{oid} -->\n⚠️ **sparkinfer auto-eval errored** for `{oid}` "
-                f"— re-run manually.\n\n<details><summary>log tail</summary>\n\n```\n{r.stdout[-1200:]}\n```\n</details>")
+            log = (r.stdout + r.stderr)[-1500:]
+            print(f"PR #{num}: eval produced no result\n{log}")
+            body = (f"<!-- sparkinfer-eval:{oid} -->\n⚠️ **sparkinfer auto-eval errored** for `{oid}` "
+                    f"— re-run manually.\n\n<details><summary>log tail</summary>\n\n```\n{log}\n```\n</details>")
             res, label = None, None
         else:
             res = json.loads(line[len("RESULT_JSON "):]); label = res["label"]; body = render(res, oid)

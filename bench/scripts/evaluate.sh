@@ -32,10 +32,15 @@ echo ">> [1/3] build submission ($COMMIT) from source (sm_$ARCH) ..." >&2
 rm -rf "$ROOT/build"; NO_PREBUILT=1 ensure_sparkinfer "$ARCH"
 SI_BIN="$ROOT/build/runtime"; SI_LD=""
 
+# One-time setup: download model (~17 GB) and build llama.cpp if not already cached.
+# /workspace persists across vast stop/start; skipped on reuse.
+ensure_model
+ensure_llamacpp "$ARCH"
+
 echo ">> [2/3] speed — median of 3 bench runs ..." >&2
 ts=()
 for _ in 1 2 3; do
-  t=$(si_run qwen3_gguf_bench "$GGUF" 128 2>/dev/null | sed -n 's/.*decode tg *: *\([0-9.][0-9.]*\).*/\1/p')
+  t=$(si_run qwen3_gguf_bench "$GGUF" 128 2>/dev/null | sed -n 's/.*decode tg *: *\([0-9.][0-9.]*\).*/\1/p' || true)
   ts+=("${t:-0}")
 done
 TPS=$(printf '%s\n' "${ts[@]}" | sort -n | awk '{a[NR]=$1} END{print a[int((NR+1)/2)]}')
