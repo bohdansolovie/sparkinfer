@@ -32,6 +32,7 @@ INSTANCE_FILE = os.path.expanduser(os.environ.get("VAST_INSTANCE_FILE", "~/.spar
 def sh(host, port, cmd, timeout=3600):
     return subprocess.run(
         ["ssh", "-i", SSH_KEY, "-o", "StrictHostKeyChecking=accept-new", "-o", "BatchMode=yes",
+         "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=40",
          "-p", str(port), f"root@{host}", cmd], capture_output=True, text=True, timeout=timeout)
 
 def info_of(v, iid):
@@ -190,6 +191,21 @@ def main():
         print(f"NEW_INSTANCE_ID {iid}")             # machine-readable for the bot
         print(f">> switched to fresh instance {iid} (old {args.reuse} stopped; destroy it if unneeded)")
 
+    MODEL_PATH = "/workspace/models/Qwen3-30B-A3B-Q4_K_M.gguf"
+    MODEL_READY = "/tmp/sparkinfer_model_ready"
+
+    def wait_model(host, port, timeout=2700):
+        """Poll until the model file is fully downloaded (sentinel file appears)."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            r = sh(host, port, f"test -f '{MODEL_READY}' && echo yes || echo no", timeout=30)
+            if r.returncode == 0 and r.stdout.strip() == "yes":
+                return True
+            elapsed = int(deadline - time.time())
+            print(f"  model download in progress (~{timeout-elapsed}s elapsed) ...")
+            time.sleep(30)
+        return False
+
     try:
         # pull/N/head refs (fork PRs) aren't fetched by default — need explicit fetch + FETCH_HEAD checkout.
         if args.ref.startswith("pull/") and args.ref.endswith("/head"):
@@ -206,6 +222,31 @@ def main():
         if sr.returncode:
             print(f">> setup rc={sr.returncode} — stdout/stderr tail (continuing):")
             sys.stdout.write((sr.stdout or "")[-1500:]); sys.stdout.write((sr.stderr or "")[-1500:])
+
+        # Pre-cache the model in a nohup background job so SSH drops don't abort the download.
+        # If the file is already present (reused box), this is instant. Otherwise we poll for the
+        # sentinel file created when the download completes.
+        prefetch = (
+            f"if [ -f '{MODEL_PATH}' ]; then touch '{MODEL_READY}' && echo cached; "
+            f"elif [ -f '{MODEL_READY}' ]; then echo already_running; "
+            f"else mkdir -p /workspace/models && rm -f '{MODEL_READY}'; "
+            f"nohup bash -c '"
+            f"  HF_HUB_DISABLE_XET=1 python3 -m huggingface_hub download Qwen/Qwen3-30B-A3B-GGUF "
+            f"    Qwen3-30B-A3B-Q4_K_M.gguf --local-dir /workspace/models >>/tmp/dl.log 2>&1 "
+            f"  || curl -fL -C - https://huggingface.co/Qwen/Qwen3-30B-A3B-GGUF/resolve/main/Qwen3-30B-A3B-Q4_K_M.gguf"
+            f"       -o {MODEL_PATH} >>/tmp/dl.log 2>&1; "
+            f"  touch {MODEL_READY}"
+            f"' >/dev/null 2>&1 & echo started; fi"
+        )
+        pr = sh(host, port, prefetch, timeout=30)
+        status = pr.stdout.strip()
+        if status == "cached":
+            print(">> model already cached — skipping download")
+        else:
+            print(f">> model download started in background ({status}) — polling for completion ...")
+            if not wait_model(host, port):
+                print("!! model download timed out — evaluate.sh will retry (may add time)")
+
         # Trust: grade with the harness from the protected default branch, not the submission's copy.
         # The build still measures the PR's kernels/runtime/moe; only bench/scripts (the scoring code,
         # incl. label.py + accuracy*) is pinned to origin/main. Fail-closed (&&): no trusted harness -> no eval.
