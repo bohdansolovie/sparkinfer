@@ -104,6 +104,17 @@
   ],
   "prs": [
     {
+      "num": 6,
+      "title": "runtime/gguf: fail loudly on bad metadata array instead of desyncing the cursor",
+      "areas": [
+        "runtime"
+      ],
+      "label": "REJECT",
+      "tps": 187.27,
+      "delta_pct": null,
+      "url": "https://github.com/gittensor-ai-lab/sparkinfer/pull/6"
+    },
+    {
       "num": 8,
       "title": "moe: PDL on the decode gate_up->down pair (gated SPARKINFER_PDL) [POC]",
       "areas": [
