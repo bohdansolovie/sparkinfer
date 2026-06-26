@@ -323,8 +323,12 @@ def push_dash(msg):
     subprocess.run(["git", "-C", ROOT, "pull", "-q", "--rebase", "origin", "main"], capture_output=True)
     subprocess.run(["git", "-C", ROOT, "push", "-q", "origin", "main"], capture_output=True)
 
-def update_dashboard(repo, pr, areas, res):
-    """Upsert the PR's verdict into the dashboard, ratchet the frontier, regenerate + push."""
+def update_dashboard(repo, pr, areas, res, base_frontier=0):
+    """Upsert the PR's verdict into the dashboard, ratchet the frontier, regenerate + push.
+    base_frontier = the displayed frontier at the START of this run; a PR's projected frontier is
+    base_frontier scaled by its same-box relative gain (hardware-independent). We take the MAX, not a
+    product — PRs in a run are independent branches off main, so they don't stack; only the best
+    advances the headline (the rest are valid but smaller, shown in the table)."""
     data = load_dash()
     if data is None: return
     num = pr["number"]
@@ -336,24 +340,20 @@ def update_dashboard(repo, pr, areas, res):
     data["prs"].insert(0, entry)
     data["prs"] = data["prs"][:50]
     if res.get("pass") and res.get("label") in FRONTIER_LABELS:
-        # Scoring is now same-box (PR vs origin/main measured on the same box), so ratchet the
-        # DISPLAYED frontier by the PR's same-box RELATIVE gain (compounding) rather than its raw
-        # tok/s. That keeps the headline hardware-independent and monotonic — a real gain measured
-        # on a slower box still advances it, instead of being hidden by a faster box's old number.
-        old_f = data["status"].get("frontier_tps") or 0
         gain = (res.get("pct_over_frontier") or 0) / 100.0
-        new_f = round(old_f * (1 + gain), 2) if old_f else round(res.get("tps") or 0, 2)
-        data["status"]["frontier_tps"] = new_f                  # ratchet the live frontier
-        # Accuracy shown on the dashboard is the FRONTIER's accuracy — refresh it from the same
-        # eval that just set the frontier, so token-match/KL never go stale.
-        if res.get("top1") is not None: data["status"]["token_match"] = round(res["top1"], 4)
-        if res.get("kl") is not None:   data["status"]["kl"] = round(res["kl"], 4)
-        # Record the landed optimization for the journey chart (live continuation of `passes`).
-        short = re.sub(r"^\w+(\([^)]*\))?:\s*", "", pr.get("title", ""))[:28]   # strip "area(x): " prefix
-        landed = [m for m in data.get("landed", []) if m.get("pr") != num]      # dedupe by PR
-        landed.append({"name": short or f"PR #{num}", "tps": new_f,
-                       "pr": num, "date": datetime.date.today().isoformat()})
-        data["landed"] = sorted(landed, key=lambda m: m["tps"])
+        cand = round(base_frontier * (1 + gain), 2) if base_frontier else round(res.get("tps") or 0, 2)
+        cur = data["status"].get("frontier_tps") or 0
+        if cand > cur:                                          # this PR advances the live frontier
+            data["status"]["frontier_tps"] = cand
+            # Accuracy shown on the dashboard is the FRONTIER's accuracy — refresh from this eval.
+            if res.get("top1") is not None: data["status"]["token_match"] = round(res["top1"], 4)
+            if res.get("kl") is not None:   data["status"]["kl"] = round(res["kl"], 4)
+            # Record the landed optimization for the journey chart (live continuation of `passes`).
+            short = re.sub(r"^\w+(\([^)]*\))?:\s*", "", pr.get("title", ""))[:28]   # strip "area(x): " prefix
+            landed = [m for m in data.get("landed", []) if m.get("pr") != num]      # dedupe by PR
+            landed.append({"name": short or f"PR #{num}", "tps": cand,
+                           "pr": num, "date": datetime.date.today().isoformat()})
+            data["landed"] = sorted(landed, key=lambda m: m["tps"])
     data["updated"] = datetime.date.today().isoformat()
     write_dash(data)
     push_dash(f"dashboard: PR #{num} -> eval:{res.get('label')} ({res.get('tps')} tok/s)")
@@ -524,14 +524,20 @@ def main():
         print(f">> same-box baseline (origin/main) failed ({bres.get('label','no result')}) — "
               f"aborting; no PRs graded.\n{log}"); return
     run_baseline = bres["tps"]
+    run_start_frontier = (load_dash() or {}).get("status", {}).get("frontier_tps") or 0
     print(f">> same-box baseline: origin/main = {run_baseline} tok/s on this box")
 
     # Run all pending evals on the SAME instance: pass --keep so vast_eval.py never stops/destroys
     # the box mid-queue. The bot stops the instance once after ALL PRs finish (or if the instance
     # dies, subsequent PRs self-heal by provisioning a new one).
     for i, (pr, num, branch, oid, ref, areas) in enumerate(pending):
-        # Grade against the same-box baseline (origin/main measured above), ratcheted by any PR that
-        # landed earlier in THIS run — so later PRs are graded against the new best, not stale main.
+        # Grade against the same-box baseline = MERGED origin/main (measured above). Every PR in the
+        # run is graded against main, NOT against other PRs in the run — #67 and #70 are independent
+        # branches off main, so each must get its own gain over main (the old within-run ratchet made
+        # whichever ran second look like "none"). The frontier advances when you MERGE; to see if two
+        # optimizations STACK, re-evaluate the second after merging the first. Literal duplicates are
+        # caught by copycat detection; emission only pays MERGED PRs, so the maintainer's merge choice
+        # (not eval order) decides what counts.
         cur_frontier = run_baseline
         cur_iid = current_instance(args.instance)
         cmd = [sys.executable, os.path.join(HERE, "vast_eval.py"),
@@ -575,9 +581,9 @@ def main():
             add_label(args.repo, num, f"eval:{label}")
         gh(["pr", "comment", str(num), "-R", args.repo, "--body", body])
         print(f"PR #{num}: posted {'eval:'+label if label else 'error'} — NOT merged.")
-        if res: update_dashboard(args.repo, pr, areas, res)
-        if res and res.get("label") in FRONTIER_LABELS and (res.get("tps") or 0) > run_baseline:
-            run_baseline = res["tps"]   # later PRs this run grade against this same-box result
+        if res: update_dashboard(args.repo, pr, areas, res, run_start_frontier)
+        # NB: run_baseline is NOT ratcheted here — every PR is graded against merged origin/main, so
+        # independent optimizations each get their true gain (the frontier advances on MERGE, not eval).
 
     # Stop (not destroy) the instance after all PRs — disk/model cache persists for next run.
     final_iid = current_instance(args.instance)
