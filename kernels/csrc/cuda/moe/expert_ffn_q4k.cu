@@ -44,15 +44,22 @@ __device__ __forceinline__ void si_pdl_sync() {
 __device__ __forceinline__ float q4kf_h2f(const unsigned char* p) {
     __half h; *((unsigned short*)&h) = *(const unsigned short*)p; return __half2float(h);
 }
+// Read-only texture/L2 path for quantized weight bytes (decode is weight-bandwidth bound).
+__device__ __forceinline__ unsigned char q4kf_ldg_u8(const unsigned char* p) { return __ldg(p); }
+__device__ __forceinline__ signed char q4kf_ldg_i8(const signed char* p) { return __ldg(p); }
+__device__ __forceinline__ float q4kf_h2f_ldg(const unsigned char* p) {
+    __half h; unsigned short v = __ldg(reinterpret_cast<const unsigned short*>(p));
+    *((unsigned short*)&h) = v; return __half2float(h);
+}
+__device__ __forceinline__ void q4kf_scale_min_ldg(int j, const unsigned char* q, int* d, int* m) {
+    if (j < 4) { *d = q4kf_ldg_u8(q + j) & 63; *m = q4kf_ldg_u8(q + j + 4) & 63; }
+    else { *d = (q4kf_ldg_u8(q + j + 4) & 0xF) | ((q4kf_ldg_u8(q + j - 4) >> 6) << 4);
+           *m = (q4kf_ldg_u8(q + j + 4) >> 4)  | ((q4kf_ldg_u8(q + j)     >> 6) << 4); }
+}
 __device__ __forceinline__ float q4kf_wsum(float v) {
     #pragma unroll
     for (int m = 16; m > 0; m >>= 1) v += __shfl_xor_sync(0xffffffff, v, m);
     return v;
-}
-__device__ __forceinline__ void q4kf_scale_min(int j, const unsigned char* q, int* d, int* m) {
-    if (j < 4) { *d = q[j] & 63; *m = q[j + 4] & 63; }
-    else { *d = (q[j + 4] & 0xF) | ((q[j - 4] >> 6) << 4);
-           *m = (q[j + 4] >> 4)  | ((q[j]     >> 6) << 4); }
 }
 __device__ __forceinline__ float q4kf_silu(float x) { return x / (1.f + __expf(-x)); }
 
@@ -63,29 +70,29 @@ __device__ __forceinline__ float q4kf_deq_dot(int t, const unsigned char* b, con
     float p = 0.f;
     if (t == 14) {   // Q6_K
         const unsigned char* ql = b; const unsigned char* qh = b + 128;
-        const signed char* sc = (const signed char*)(b + 192); float d = q4kf_h2f(b + 208);
+        const signed char* sc = (const signed char*)(b + 192); float d = q4kf_h2f_ldg(b + 208);
         #pragma unroll
         for (int nn = 0; nn < 2; nn++) {
             const unsigned char* qln = ql + nn*64; const unsigned char* qhn = qh + nn*32; const signed char* scn = sc + nn*8;
             int is = lane / 16;
-            int q1 = (int)((qln[lane]    & 0xF) | (((qhn[lane] >> 0) & 3) << 4)) - 32;
-            int q2 = (int)((qln[lane+32] & 0xF) | (((qhn[lane] >> 2) & 3) << 4)) - 32;
-            int q3 = (int)((qln[lane]    >> 4)  | (((qhn[lane] >> 4) & 3) << 4)) - 32;
-            int q4 = (int)((qln[lane+32] >> 4)  | (((qhn[lane] >> 6) & 3) << 4)) - 32;
-            p += d * scn[is+0] * q1 * sx[nn*128 + lane];
-            p += d * scn[is+2] * q2 * sx[nn*128 + lane + 32];
-            p += d * scn[is+4] * q3 * sx[nn*128 + lane + 64];
-            p += d * scn[is+6] * q4 * sx[nn*128 + lane + 96];
+            int q1 = (int)((q4kf_ldg_u8(qln + lane)    & 0xF) | (((q4kf_ldg_u8(qhn + lane) >> 0) & 3) << 4)) - 32;
+            int q2 = (int)((q4kf_ldg_u8(qln + lane+32) & 0xF) | (((q4kf_ldg_u8(qhn + lane) >> 2) & 3) << 4)) - 32;
+            int q3 = (int)((q4kf_ldg_u8(qln + lane)    >> 4)  | (((q4kf_ldg_u8(qhn + lane) >> 4) & 3) << 4)) - 32;
+            int q4 = (int)((q4kf_ldg_u8(qln + lane+32) >> 4)  | (((q4kf_ldg_u8(qhn + lane) >> 6) & 3) << 4)) - 32;
+            p += d * (float)q4kf_ldg_i8(scn + is+0) * q1 * sx[nn*128 + lane];
+            p += d * (float)q4kf_ldg_i8(scn + is+2) * q2 * sx[nn*128 + lane + 32];
+            p += d * (float)q4kf_ldg_i8(scn + is+4) * q3 * sx[nn*128 + lane + 64];
+            p += d * (float)q4kf_ldg_i8(scn + is+6) * q4 * sx[nn*128 + lane + 96];
         }
     } else {         // Q4_K
-        float d = q4kf_h2f(b), dmin = q4kf_h2f(b + 2);
+        float d = q4kf_h2f_ldg(b), dmin = q4kf_h2f_ldg(b + 2);
         const unsigned char* sc = b + 4; const unsigned char* qs = b + 16;
         #pragma unroll
         for (int g = 0; g < 4; g++) {
             int s1, m1, s2, m2;
-            q4kf_scale_min(2*g, sc, &s1, &m1); q4kf_scale_min(2*g+1, sc, &s2, &m2);
+            q4kf_scale_min_ldg(2*g, sc, &s1, &m1); q4kf_scale_min_ldg(2*g+1, sc, &s2, &m2);
             float d1 = d*s1, mm1 = dmin*m1, d2 = d*s2, mm2 = dmin*m2;
-            unsigned char qb = qs[g*32 + lane];
+            unsigned char qb = q4kf_ldg_u8(qs + g*32 + lane);
             p += (d1 * (qb & 0xF) - mm1) * sx[g*64 + lane];
             p += (d2 * (qb >> 4)  - mm2) * sx[g*64 + 32 + lane];
         }
@@ -184,13 +191,13 @@ __global__ void gate_up_q4k_mmvq_kernel(
         // gate
         {
             const unsigned char* blk = gbase + (size_t)super * 144;
-            float d = q4kf_h2f(blk), dmin = q4kf_h2f(blk + 2);
-            int scd, scm; q4kf_scale_min(sib, blk + 4, &scd, &scm);
+            float d = q4kf_h2f_ldg(blk), dmin = q4kf_h2f_ldg(blk + 2);
+            int scd, scm; q4kf_scale_min_ldg(sib, blk + 4, &scd, &scm);
             const int* q = reinterpret_cast<const int*>(blk + 16 + boff);
             int sumi = 0;
             #pragma unroll
             for (int k = 0; k < 8; k++) {
-                int w = hi ? ((q[k] >> 4) & 0x0F0F0F0F) : (q[k] & 0x0F0F0F0F);
+                int w = hi ? ((__ldg(q + k) >> 4) & 0x0F0F0F0F) : (__ldg(q + k) & 0x0F0F0F0F);
                 sumi = __dp4a(w, aint[k], sumi);
             }
             acc_g += d * (float)scd * xd * (float)sumi - dmin * (float)scm * xs;
@@ -198,13 +205,13 @@ __global__ void gate_up_q4k_mmvq_kernel(
         // up
         {
             const unsigned char* blk = ubase + (size_t)super * 144;
-            float d = q4kf_h2f(blk), dmin = q4kf_h2f(blk + 2);
-            int scd, scm; q4kf_scale_min(sib, blk + 4, &scd, &scm);
+            float d = q4kf_h2f_ldg(blk), dmin = q4kf_h2f_ldg(blk + 2);
+            int scd, scm; q4kf_scale_min_ldg(sib, blk + 4, &scd, &scm);
             const int* q = reinterpret_cast<const int*>(blk + 16 + boff);
             int sumi = 0;
             #pragma unroll
             for (int k = 0; k < 8; k++) {
-                int w = hi ? ((q[k] >> 4) & 0x0F0F0F0F) : (q[k] & 0x0F0F0F0F);
+                int w = hi ? ((__ldg(q + k) >> 4) & 0x0F0F0F0F) : (__ldg(q + k) & 0x0F0F0F0F);
                 sumi = __dp4a(w, aint[k], sumi);
             }
             acc_u += d * (float)scd * xd * (float)sumi - dmin * (float)scm * xs;
