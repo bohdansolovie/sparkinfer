@@ -675,7 +675,7 @@ void launch_moe_expert_ffn_q4k(
         const int qthreads = 256;
         quant_h_q8_1_kernel<<<(nqb + (qthreads >> 5) - 1) / (qthreads >> 5), qthreads, 0, stream>>>(
             h_scratch, hq8, nqb);
-        // split-K MMVQ down (default S=4): S warps/row -> S*H warps in flight, hiding
+        // split-K MMVQ down (default S=2): S warps/row -> S*H warps in flight, hiding
         // the bs=1 occupancy stall the one-warp kernel hits. Falls back to one-warp if disabled.
         const int S = down_splitk_s();
         if (S > 1) {

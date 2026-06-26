@@ -79,6 +79,7 @@ struct Qwen35Model::Impl {
     signed char* aq8 = nullptr; float *aq8_d = nullptr, *aq8_s = nullptr;
     bool use_pq = true;   // SPARKINFER_PQ=0 disables the pre-quantized GEMV path
     void* aq81 = nullptr; // block_q8_1 activation for the faithful llama mmvq port
+    bool use_lm_pq = true; // lm_head: quantize xn once + llama MMVQ (not per-block re-quant)
     bool use_llama = true; // default ON: faithful llama mmvq for Q4_K attn GEMVs (+9.7%, top1 0.99). =0 disables
     bool use_q6mmvq = true;  // default ON: int8 Q6_K mmvq for attn-V upgrades + LM head. =0 disables
 
@@ -280,7 +281,20 @@ int Qwen35Model::forward_token(int token_id, int position) {
         kernels::launch_quantize_q8_1_blocks(s.xn, s.aq81, H, st);
         kernels::launch_gemv_q6k_dp4a_f32(s.aq81, s.w.lm_head, s.logits, c.vocab, H, st);
     }
-    else if (s.gguf && s.w.lm_head_type) kernels::launch_gemv_q_f32(s.xn, s.w.lm_head, s.w.lm_head_type, s.logits, c.vocab, H, st);
+    else if (s.gguf && s.w.lm_head_type) {
+        // Q4_K LM head: quantize xn once + llama MMVQ (same as Q/K/V; not per-block re-quant).
+        if (s.use_lm_pq && s.use_pq && s.w.lm_head_type == 12) {
+            if (s.use_llama) {
+                kernels::launch_quantize_q8_1_blocks(s.xn, s.aq81, H, st);
+                kernels::launch_mmvq_q4k_f32(s.aq81, s.w.lm_head, s.logits, c.vocab, H, st);
+            } else {
+                kernels::launch_quantize_q8_1(s.xn, s.aq8, s.aq8_d, s.aq8_s, H, st);
+                kernels::launch_gemv_q_dp4a_pq_f32(s.aq8, s.aq8_d, s.aq8_s, s.w.lm_head, s.logits, c.vocab, H, st);
+            }
+        } else {
+            kernels::launch_gemv_q_f32(s.xn, s.w.lm_head, s.w.lm_head_type, s.logits, c.vocab, H, st);
+        }
+    }
     else if (s.gguf)                kernels::launch_gemv_f32(s.xn, s.w.lm_head, s.logits, c.vocab, H, st);  // lm_head native [vocab,H]
     else        kernels::launch_linear_f32(s.xn, s.w.lm_head, s.logits, 1, c.vocab, H, st);
     kernels::launch_argmax(s.logits, s.d_out_id, 1, c.vocab, st);
