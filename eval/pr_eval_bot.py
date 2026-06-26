@@ -30,7 +30,7 @@ def current_instance(default):
 # bring-up failure it retries on later runs (~30 min apart) instead of provisioning immediately;
 # only after VAST_REUSE_MAX_RETRIES misses does it spin up a new box (the pinned one is kept).
 # Set VAST_DEFAULT_INSTANCE="" to disable the pin and always provision fresh.
-PINNED_INSTANCE = os.environ.get("VAST_DEFAULT_INSTANCE", "42613343").strip()
+PINNED_INSTANCE = os.environ.get("VAST_DEFAULT_INSTANCE", "42682383").strip()
 PINNED_RETRY_RC = 75   # must match vast_eval.PINNED_RETRY_RC
 
 # Subsystem buckets for the deterministic area:<name> label (from a PR's top-level changed

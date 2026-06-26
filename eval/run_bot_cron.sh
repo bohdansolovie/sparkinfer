@@ -22,7 +22,7 @@ echo "[$(date -u +%FT%TZ)] sparkinfer PR bot run"
 # Defaults are fallbacks only: the bot reuses the pinned box (VAST_DEFAULT_INSTANCE in
 # pr_eval_bot.py) and re-reads the live frontier from dashboard/data.json each PR.
 python3 eval/pr_eval_bot.py \
-  --instance "${VAST_INSTANCE:-42613343}" \
+  --instance "${VAST_INSTANCE:-42682383}" \
   --frontier "${FRONTIER:-285}" \
   --ceiling  "${CEILING:-366}" \
   --repo     "${REPO:-gittensor-ai-lab/sparkinfer}"
