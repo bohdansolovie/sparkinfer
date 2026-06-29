@@ -95,6 +95,15 @@ validators. The bot also tags the PR's **subsystem** — `area:kernels` / `runti
 The bot **never merges** — merging is manual after review. Runs the same evaluator you can run
 yourself: [`eval/`](eval) (`vast_eval.py`, `pr_eval_bot.py`).
 
+### Trust & verifiability
+
+Results are **reproducible from source today** — build `main` and the PR on the same RTX 5090 and you
+get the same same-box delta (already independently reproduced by the community on a rented 5090). We're
+hardening it toward **attested, multi-source eval**: CPU-TEE-signed scoring receipts (Intel TDX),
+immutable run logs, and independent-validator consensus. Consumer 5090s have **no GPU Confidential
+Computing**, so the *speed number* is trusted via **reproduction + consensus**, not a GPU enclave — by
+design, since we optimize the hardware people actually own. → **[EVAL-TRUST.md](EVAL-TRUST.md)**
+
 ## License
 
 [MIT](LICENSE) · [Changelog](CHANGELOG.md)
